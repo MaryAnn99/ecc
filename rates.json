@@ -1,0 +1,14 @@
+{
+  "_note": "salario_mensual derived from Jibble's 'Tarifa facturable' (= hora_ordinaria) via: salario = hora_ordinaria * 4.33 * 44. Employees with 0 must be filled manually.",
+  "Ashley Fernandez":                   { "salario_mensual": 31959.62 },
+  "Carlos Ureña":                       { "salario_mensual": 29989.95 },
+  "Edwin Domingo Pérez Encarnación ":   { "salario_mensual": 34970.72 },
+  "Enrique Lantigua":                   { "salario_mensual": 35000 },
+  "Jose Alberto de Jesus":              { "salario_mensual": 0 },
+  "Jose Diaz ":                         { "salario_mensual": 24981.72 },
+  "Keylin Rivas":                       { "salario_mensual": 34970.72 },
+  "Larenz Castro":                      { "salario_mensual": 24981.72 },
+  "Libeth Valerio":                     { "salario_mensual": 49968.54 },
+  "Maudeza Honore":                     { "salario_mensual": 0 },
+  "Xavier Celedonio":                   { "salario_mensual": 55000 }
+}
