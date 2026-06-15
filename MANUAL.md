@@ -155,10 +155,11 @@ Aparecen dos tablas:
 | Columna | Qué significa |
 |---|---|
 | `Entrada` / `Salida` | Hora de reloj registrada (la salida de madrugada sale como AM en la misma fila) |
+| `Descanso` | Horas de descanso reportadas ese día (suma de remunerado + no remunerado) |
 | `Horas extra` | Total de horas extra del día |
-| `H. diurna` | Horas extras diurnas (17:00–21:00) |
-| `H. nocturna` | Horas extras nocturnas (21:00–24:00, máximo 3h) |
-| `H. doble` | Horas dobles (solo domingos y feriados) |
+| `H. diurna` | Horas extras diurnas (horario de día, hasta las 21:00) |
+| `H. nocturna` | Horas extras nocturnas (21:00–07:00) |
+| `H. doble` | Horas dobles (domingos, feriados y sábados) |
 | `$ Diurna` / `$ Nocturna` / `$ Doble` | Monto a pagar por cada tipo |
 | `Total $` | Total a pagar ese día |
 
@@ -179,18 +180,30 @@ Según el Código de Trabajo de la República Dominicana:
 
 | Tipo | Cuándo aplica | Multiplicador |
 |---|---|---|
-| **Diurna** | Lunes a sábado de 17:00 a 21:00 (máx 4h) | × 1.35 sobre la hora ordinaria |
-| **Nocturna** | Lunes a sábado de 21:00 a 24:00 (máx 3h) | × 1.54 sobre la hora ordinaria |
-| **Doble** | Domingos y feriados | × 2.00 sobre la hora ordinaria |
+| **Diurna** | Lunes a viernes, horario de día hasta las 21:00 (normalmente desde las 17:00) | × 1.35 sobre la hora ordinaria |
+| **Nocturna** | Lunes a viernes de 21:00 a 07:00 | × 1.54 sobre la hora ordinaria |
+| **Doble** | Domingos, feriados y sábados | × 2.00 sobre la hora ordinaria |
 
-> La hora extra clasificable termina a **medianoche**: como máximo 4h diurnas + 3h
-> nocturnas = 7h por día. Lo que se trabaje después de las 12AM **no se cuenta**
-> automáticamente; revísalo manualmente.
+> **Lunes a viernes:** la jornada es de 8h de trabajo + 1h de almuerzo libre. La hora
+> extra se calcula desde el reloj (primera entrada / última salida), no desde la
+> columna de Jibble. Cada hora extra se clasifica según la hora real del reloj: de día
+> (hasta las 21:00) es **diurna**, de 21:00 a 07:00 es **nocturna**. Quien entra antes
+> de las 8AM puede acumular más de 4h diurnas. Lo trabajado después de las 07:00 **no
+> se cuenta** automáticamente; revísalo manualmente.
 
-> **Sábados:** el horario de taller es de 8AM a 5PM, igual que entre semana, así que
-> las horas extra del sábado son **normales** (diurna/nocturna), **no dobles**. La
-> extra cuenta a partir de las 5PM. Como Jibble tiene mal el horario del sábado, esas
-> horas se calculan desde la hora de salida registrada, no desde la columna de Jibble.
+> **Descansos:** el descanso libre es de **1h por día**. Si la persona reporta **más**
+> de 1h de descanso, el exceso **no se paga como extra** — esas horas reponen el
+> descanso tomado de más. Si reporta **menos** de 1h (o nada), se asume igual que tomó
+> su hora libre completa. El cálculo lee las columnas `Horas de descanso (remunerado)`
+> y `Horas de descanso (no remunerado)` de Jibble (la suma de ambas). Ejemplo: si
+> alguien toma 2h de descanso y se queda 1h de más, esa hora extra **no se le paga**.
+
+> **Sábados:** el horario es de **8AM a 12PM** (4h de trabajo + 1h de descanso libre).
+> La hora extra del sábado (lo trabajado por encima de esas horas) se paga **doble**,
+> no diurna/nocturna. Se calcula desde el reloj y descontando los descansos igual que
+> entre semana. **Ashley, Keylin y Libeth no trabajan los sábados**, así que cualquier
+> hora que **trabajen** un sábado se paga doble (se descuenta solo su descanso real,
+> sin asumir la hora libre).
 
 La hora ordinaria se calcula así:
 ```

@@ -24,6 +24,7 @@ AUDIT_COLUMNS = {
     "Día": "Día",
     "Entrada": "Entrada",
     "Salida": "Salida",
+    "Descanso": "Descanso",
     "h_extras": "Horas extra",
     "h_diurna": "H. diurna",
     "h_nocturna": "H. nocturna",

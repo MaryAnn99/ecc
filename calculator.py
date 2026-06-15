@@ -8,8 +8,15 @@ from typing import Optional
 
 import pandas as pd
 
-OVERTIME_DAY_START = time(17, 0)   # 5:00 PM — regular day ends, extras begin
-DIURNA_END = time(21, 0)           # 9:00 PM — diurna window closes
+NOCTURNA_START = 21.0              # 9:00 PM — nighttime overtime begins
+NOCTURNA_END = 7.0                 # 7:00 AM — nighttime overtime ends (next day)
+
+WEEKDAY_WORK_HOURS = 8.0           # ordinary work, excluding break (Mon–Fri)
+SATURDAY_WORK_HOURS = 4.0          # ordinary work, excluding break (Saturday, 8AM–12PM)
+FREE_BREAK_HOURS = 1.0             # daily free rest; assumed taken even if not reported
+
+# These employees do not work Saturdays, so ANY Saturday hour is paid double.
+SATURDAY_ALL_DAY_DOUBLE = {"Ashley Fernandez", "Keylin Rivas", "Libeth Valerio"}
 
 DIURNA_MULTIPLIER = 1.35
 NOCTURNA_MULTIPLIER = 1.54
@@ -25,6 +32,8 @@ class OvertimeBreakdown:
     diurna_amount: float = 0.0
     nocturna_amount: float = 0.0
     doble_amount: float = 0.0
+
+    reported_break: float = 0.0
 
     incomplete: bool = False
 
@@ -143,54 +152,87 @@ def parse_hours(value) -> float:
         return 0.0
 
 
-def classify_weekday_hours(total_extra_hours: float, last_exit: time) -> tuple[float, float]:
+def _presence_hours(first_entry: Optional[time], last_exit: Optional[time]) -> float:
     """
-    Returns (diurna_hours, nocturna_hours) for a weekday.
+    Clock presence in decimal hours, handling shifts that cross midnight.
 
-    Extra hours always start at 17:00 and advance forward:
-    - 17:00–21:00 → diurna   (max 4h)
-    - 21:00–24:00 → nocturna (max 3h — caps at midnight)
-
-    Overtime worked past midnight is NOT counted: the classifiable window ends at
-    24:00 (max 4h diurna + 3h nocturna = 7h/day).
-
-    last_exit is used to determine how much of each window was actually reached.
-    The Jibble-reported total caps the result.
+    If the exit is at or before the entry, the shift ran into the next day, so 24h
+    is added. Returns 0 if either time is missing.
     """
-    if total_extra_hours <= 0:
+    if first_entry is None or last_exit is None:
+        return 0.0
+    entry_h = first_entry.hour + first_entry.minute / 60.0
+    exit_h = last_exit.hour + last_exit.minute / 60.0
+    if exit_h <= entry_h:
+        exit_h += 24.0
+    return exit_h - entry_h
+
+
+def _split_diurna_nocturna(start_h: float, end_h: float) -> tuple[float, float]:
+    """
+    Split the overtime window [start_h, end_h] (absolute decimal hours, may cross
+    midnight) into daytime and nighttime hours by actual clock time.
+
+    Nighttime is 21:00–07:00, modeled as the repeating intervals [21+24k, 31+24k).
+    Daytime (07:00–21:00) is everything else. Neither side has a cap.
+    """
+    if end_h <= start_h:
         return 0.0, 0.0
 
-    exit_h = last_exit.hour + last_exit.minute / 60.0
-    if exit_h < 17.0:
-        exit_h += 24.0
-
-    diurna_possible = max(0.0, min(exit_h, 21.0) - 17.0)
-    nocturna_possible = max(0.0, min(exit_h, 24.0) - 21.0)
-
-    if total_extra_hours <= diurna_possible:
-        return total_extra_hours, 0.0
-
-    diurna = diurna_possible
-    nocturna = min(total_extra_hours - diurna_possible, nocturna_possible)
+    nocturna = 0.0
+    k = int((start_h - NOCTURNA_END) // 24) - 1
+    while NOCTURNA_START + 24 * k < end_h:
+        lo = NOCTURNA_START + 24 * k          # 21:00 of day k
+        hi = NOCTURNA_END + 24 + 24 * k       # 07:00 of day k+1
+        nocturna += max(0.0, min(end_h, hi) - max(start_h, lo))
+        k += 1
+    diurna = (end_h - start_h) - nocturna
     return diurna, nocturna
 
 
-def _overtime_after_17(last_exit: Optional[time]) -> float:
-    """
-    Overtime hours from clock time: work past 17:00 until last_exit.
+def _reported_break_hours(row: pd.Series) -> float:
+    """Total break time reported for the day (paid + unpaid), in decimal hours.
 
-    Used for Saturdays — a normal workday (8AM–5PM workshop schedule) whose extras
-    start at 17:00 like any weekday. Jibble has the Saturday schedule wrong, so its
-    daily-OT column is unreliable and overtime must be derived from clock times.
-    An AM exit (before 17:00) means the shift ran past midnight.
+    Jibble aggregates all of a day's breaks into these two totals, so we never need
+    to walk the per-break 'Descanso 1', 'Descanso 2'… columns.
     """
-    if last_exit is None:
-        return 0.0
+    return (
+        parse_hours(row.get("Horas de descanso (remunerado)", 0))
+        + parse_hours(row.get("Horas de descanso (no remunerado)", 0))
+    )
 
-    exit_h = last_exit.hour + last_exit.minute / 60.0
-    if exit_h < OVERTIME_DAY_START.hour:
-        exit_h += 24.0
-    return max(0.0, exit_h - OVERTIME_DAY_START.hour)
+
+def classify_weekday_hours(
+    first_entry: Optional[time],
+    last_exit: Optional[time],
+    reported_break: float = 0.0,
+    work_hours: float = WEEKDAY_WORK_HOURS,
+) -> tuple[float, float]:
+    """
+    Returns (diurna_hours, nocturna_hours) for a Mon–Fri day, computed from clock.
+
+    Overtime is presence beyond the ordinary workday (8h work) plus the effective
+    break. The free rest is 1h; if more break is reported, the excess must be "repaid"
+    by working later, so it does NOT count as overtime — it delays when overtime starts:
+        effective_break = max(reported_break, 1h)
+        overtime window = [entry + 8h + effective_break, exit]
+    Each hour of that window is classified by real clock time:
+    - daytime (07:00–21:00) → diurna (no cap)
+    - night (21:00–07:00)   → nocturna
+
+    For an 8AM entry with the free 1h break the window starts at 17:00 (classic split).
+    An earlier entry pushes overtime before 17:00, where those hours still count diurna.
+    """
+    presence = _presence_hours(first_entry, last_exit)
+    effective_break = max(reported_break, FREE_BREAK_HOURS)
+    ot_hours = presence - work_hours - effective_break
+    if ot_hours <= 0:
+        return 0.0, 0.0
+
+    entry_h = first_entry.hour + first_entry.minute / 60.0
+    ot_start = entry_h + work_hours + effective_break
+    ot_end = ot_start + ot_hours
+    return _split_diurna_nocturna(ot_start, ot_end)
 
 
 def _is_incomplete_record(first_entry: Optional[time], last_exit: Optional[time]) -> bool:
@@ -236,6 +278,8 @@ def compute_overtime(
 
     first_entry = parse_time(row.get("Primera entrada"))
     last_exit = parse_time(row.get("Última salida"))
+    reported_break = _reported_break_hours(row)
+    breakdown.reported_break = reported_break
 
     if _is_incomplete_record(first_entry, last_exit):
         breakdown.incomplete = True
@@ -256,24 +300,25 @@ def compute_overtime(
         breakdown.doble_amount = hours * r_doble
 
     elif is_saturday:
-        # Saturday is a normal workday (8AM–5PM workshop schedule), same as L-V —
-        # extras are NOT double. Overtime starts at 17:00 and is classified
-        # diurna/nocturna. Computed from clock time because Jibble's Saturday
-        # daily-OT column is unreliable (wrong configured schedule).
-        hours = _overtime_after_17(last_exit)
-        diurna_h, nocturna_h = classify_weekday_hours(hours, last_exit)
-        breakdown.diurna_hours = diurna_h
-        breakdown.nocturna_hours = nocturna_h
-        breakdown.diurna_amount = diurna_h * r_diurna
-        breakdown.nocturna_amount = nocturna_h * r_nocturna
+        # Saturday schedule is 8AM–12PM (4h work + 1h break). Overtime past those
+        # worked hours is paid DOUBLE. Ashley, Keylin and Libeth do not work
+        # Saturdays, so ANY hour they actually work is double (no schedule, no free
+        # break assumed — only their reported break is subtracted). Computed from
+        # clock time because Jibble's Saturday daily-OT column is unreliable.
+        presence = _presence_hours(first_entry, last_exit)
+        if employee in SATURDAY_ALL_DAY_DOUBLE:
+            hours = max(0.0, presence - reported_break)
+        else:
+            effective_break = max(reported_break, FREE_BREAK_HOURS)
+            hours = max(0.0, presence - SATURDAY_WORK_HOURS - effective_break)
+        breakdown.doble_hours = hours
+        breakdown.doble_amount = hours * r_doble
 
     else:
-        hours = parse_hours(row.get("Horas extras diarias", 0))
-        if hours > 0 and last_exit is not None:
-            diurna_h, nocturna_h = classify_weekday_hours(hours, last_exit)
-        else:
-            diurna_h, nocturna_h = hours, 0.0
-
+        # Mon–Fri: overtime is presence beyond 8h work + the effective break (free 1h
+        # or more if reported), classified diurna/nocturna by clock time. Jibble's
+        # daily-OT column is not used.
+        diurna_h, nocturna_h = classify_weekday_hours(first_entry, last_exit, reported_break)
         breakdown.diurna_hours = diurna_h
         breakdown.nocturna_hours = nocturna_h
         breakdown.diurna_amount = diurna_h * r_diurna
@@ -306,6 +351,7 @@ def process_timesheet(
                 "Día": row.get("Día", ""),
                 "Entrada": _fmt_time(row.get("Primera entrada")),
                 "Salida": _fmt_time(row.get("Última salida")),
+                "Descanso": round(b.reported_break, 2),
                 "h_extras": round(b.total_hours, 2),
                 "h_diurna": round(b.diurna_hours, 2),
                 "h_nocturna": round(b.nocturna_hours, 2),

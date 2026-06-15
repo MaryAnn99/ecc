@@ -5,6 +5,8 @@ import pytest
 
 from calculator import (
     OvertimeBreakdown,
+    _reported_break_hours,
+    _split_diurna_nocturna,
     classify_weekday_hours,
     compute_overtime,
     load_approved_days,
@@ -15,131 +17,188 @@ from calculator import (
 )
 
 
+class TestSplitDiurnaNocturna:
+    """Low-level split of an absolute-hour overtime window into day/night."""
+
+    def test_pure_diurna_window(self):
+        assert _split_diurna_nocturna(17.0, 21.0) == pytest.approx((4.0, 0.0))
+
+    def test_pure_nocturna_window(self):
+        assert _split_diurna_nocturna(21.0, 24.0) == pytest.approx((0.0, 3.0))
+
+    def test_window_crossing_midnight(self):
+        # 17:00 → 01:00 next day: 4 diurna (17–21) + 4 nocturna (21–01)
+        assert _split_diurna_nocturna(17.0, 25.0) == pytest.approx((4.0, 4.0))
+
+    def test_early_overtime_all_diurna(self):
+        # 15:00 → 18:00 is all daytime
+        assert _split_diurna_nocturna(15.0, 18.0) == pytest.approx((3.0, 0.0))
+
+    def test_nocturna_ends_at_7am(self):
+        # 21:00 → 07:00 is 10h of nighttime
+        assert _split_diurna_nocturna(21.0, 31.0) == pytest.approx((0.0, 10.0))
+
+    def test_empty_window(self):
+        assert _split_diurna_nocturna(20.0, 20.0) == pytest.approx((0.0, 0.0))
+
+
 class TestClassifyWeekdayHours:
-    def test_all_within_diurna_window(self):
-        diurna, nocturna = classify_weekday_hours(2.0, time(19, 0))
-        assert diurna == pytest.approx(2.0)
+    """Mon–Fri overtime is presence beyond 9h, classified by real clock time."""
+
+    def test_no_overtime_under_threshold(self):
+        # 8h presence (< 9h ordinary) → no overtime
+        diurna, nocturna = classify_weekday_hours(time(8, 0), time(16, 0))
+        assert diurna == pytest.approx(0.0)
         assert nocturna == pytest.approx(0.0)
 
-    def test_exit_at_diurna_boundary(self):
-        # Exactly 4h extra, exits exactly at 21:00 — all diurna
-        diurna, nocturna = classify_weekday_hours(4.0, time(21, 0))
+    def test_exactly_threshold_no_overtime(self):
+        # 9h presence (08:00–17:00) → exactly ordinary, no overtime
+        diurna, nocturna = classify_weekday_hours(time(8, 0), time(17, 0))
+        assert diurna == pytest.approx(0.0)
+        assert nocturna == pytest.approx(0.0)
+
+    def test_all_diurna(self):
+        # 08:00–20:00 → 3h overtime, all diurna (17:00–20:00)
+        diurna, nocturna = classify_weekday_hours(time(8, 0), time(20, 0))
+        assert diurna == pytest.approx(3.0)
+        assert nocturna == pytest.approx(0.0)
+
+    def test_exit_at_nocturna_boundary(self):
+        # 08:00–21:00 → 4h overtime, all diurna (window 17:00–21:00)
+        diurna, nocturna = classify_weekday_hours(time(8, 0), time(21, 0))
         assert diurna == pytest.approx(4.0)
         assert nocturna == pytest.approx(0.0)
 
     def test_split_diurna_and_nocturna(self):
-        # 5h extra, exits at 22:00 → 4 diurna + 1 nocturna
-        diurna, nocturna = classify_weekday_hours(5.0, time(22, 0))
+        # 08:00–22:00 → 5h overtime → 4 diurna + 1 nocturna
+        diurna, nocturna = classify_weekday_hours(time(8, 0), time(22, 0))
         assert diurna == pytest.approx(4.0)
         assert nocturna == pytest.approx(1.0)
 
-    def test_small_hours_late_exit_still_diurna_first(self):
-        # 2h extra but exits at 22:00 → hours fill forward from 17:00, so all diurna
-        diurna, nocturna = classify_weekday_hours(2.0, time(22, 0))
-        assert diurna == pytest.approx(2.0)
-        assert nocturna == pytest.approx(0.0)
-
-    def test_pure_nocturna_not_possible_with_forward_fill(self):
-        # 1h extra, exits at 22:00 → fills from 17:00, so diurna
-        diurna, nocturna = classify_weekday_hours(1.0, time(22, 0))
-        assert diurna == pytest.approx(1.0)
-        assert nocturna == pytest.approx(0.0)
-
-    def test_only_nocturna_hours_when_full_diurna_used(self):
-        # 6h extra, exits at 23:00 → 4 diurna + 2 nocturna
-        diurna, nocturna = classify_weekday_hours(6.0, time(23, 0))
+    def test_nocturna_not_capped_at_midnight(self):
+        # 08:00–01:00 → 8h overtime → 4 diurna + 4 nocturna (NOT capped at midnight)
+        diurna, nocturna = classify_weekday_hours(time(8, 0), time(1, 0))
         assert diurna == pytest.approx(4.0)
-        assert nocturna == pytest.approx(2.0)
+        assert nocturna == pytest.approx(4.0)
 
-    def test_zero_hours_returns_zero(self):
-        diurna, nocturna = classify_weekday_hours(0.0, time(21, 0))
-        assert diurna == 0.0
-        assert nocturna == 0.0
-
-    def test_negative_hours_returns_zero(self):
-        diurna, nocturna = classify_weekday_hours(-1.0, time(21, 0))
-        assert diurna == 0.0
-        assert nocturna == 0.0
-
-    def test_nocturna_capped_at_midnight(self):
-        # 8h extra, exits at 01:00 → nocturna caps at midnight (3h), the hour past
-        # midnight is NOT counted: 4 diurna + 3 nocturna (total 7, not 8)
-        diurna, nocturna = classify_weekday_hours(8.0, time(1, 0))
+    def test_nocturna_runs_until_7am(self):
+        # 08:00–07:00 next day → 14h overtime → 4 diurna + 10 nocturna (full night)
+        diurna, nocturna = classify_weekday_hours(time(8, 0), time(7, 0))
         assert diurna == pytest.approx(4.0)
-        assert nocturna == pytest.approx(3.0)
+        assert nocturna == pytest.approx(10.0)
 
-    def test_nocturna_never_exceeds_three_hours(self):
-        # Even a huge extra with a very late exit can't push nocturna past 3h
-        diurna, nocturna = classify_weekday_hours(12.0, time(4, 0))
-        assert diurna == pytest.approx(4.0)
-        assert nocturna == pytest.approx(3.0)
-
-    def test_exit_exactly_midnight(self):
-        # 7h extra, exits at 00:00 → 4 diurna + 3 nocturna (full window)
-        diurna, nocturna = classify_weekday_hours(7.0, time(0, 0))
-        assert diurna == pytest.approx(4.0)
-        assert nocturna == pytest.approx(3.0)
+    def test_early_entry_more_than_four_diurna(self):
+        # 06:00–22:00 → 7h overtime starting at 15:00 → 6 diurna (15–21) + 1 nocturna
+        diurna, nocturna = classify_weekday_hours(time(6, 0), time(22, 0))
+        assert diurna == pytest.approx(6.0)
+        assert nocturna == pytest.approx(1.0)
 
     def test_fractional_hours(self):
-        # 4.5h extra, exits at 21:30 → 4 diurna + 0.5 nocturna
-        diurna, nocturna = classify_weekday_hours(4.5, time(21, 30))
+        # 08:00–21:30 → 4.5h overtime → 4 diurna + 0.5 nocturna
+        diurna, nocturna = classify_weekday_hours(time(8, 0), time(21, 30))
         assert diurna == pytest.approx(4.0)
         assert nocturna == pytest.approx(0.5)
 
+    def test_missing_time_returns_zero(self):
+        assert classify_weekday_hours(time(8, 0), None) == pytest.approx((0.0, 0.0))
+        assert classify_weekday_hours(None, time(20, 0)) == pytest.approx((0.0, 0.0))
 
-class TestSaturdayNormalOvertime:
-    """Saturday is a normal workday (8am-5pm workshop schedule), same as L-V.
+    def test_break_under_1h_assumes_full_free_hour(self):
+        # 08:00–17:30 with no/short break → 1h assumed → presence 9.5 − 9 = 0.5h diurna
+        diurna, nocturna = classify_weekday_hours(time(8, 0), time(17, 30), 0.0)
+        assert diurna == pytest.approx(0.5)
+        assert nocturna == pytest.approx(0.0)
 
-    Overtime starts at 17:00 and is classified diurna/nocturna — NEVER double.
-    Jibble has the Saturday schedule wrong, so overtime is computed from clock
-    times (work after 17:00), not from Jibble's daily-OT column.
+    def test_extra_break_delays_overtime(self):
+        # 08:00–20:00 with 2h break → overtime starts at 18:00 → 2h diurna (not 3h)
+        diurna, nocturna = classify_weekday_hours(time(8, 0), time(20, 0), 2.0)
+        assert diurna == pytest.approx(2.0)
+        assert nocturna == pytest.approx(0.0)
+
+    def test_extra_break_repaid_by_late_stay_is_not_overtime(self):
+        # 2h break + 1h late: 08:00–18:00 with 2h break → worked 8h → 0 overtime
+        # (the late hour just repays the extra break hour)
+        diurna, nocturna = classify_weekday_hours(time(8, 0), time(18, 0), 2.0)
+        assert diurna == pytest.approx(0.0)
+        assert nocturna == pytest.approx(0.0)
+
+
+class TestSaturdayDouble:
+    """Saturday schedule is 8AM–12PM (5h presence incl. break). Overtime past 5h is
+    paid DOUBLE — never diurna/nocturna. Ashley, Keylin and Libeth do not work
+    Saturdays, so ANY Saturday hour they log is double. Computed from clock time
+    (Jibble's Saturday daily-OT column is unreliable).
     """
 
-    RATES = {"Ana García": {"salario_mensual": 30000.0}}
+    RATES = {
+        "Ana García": {"salario_mensual": 30000.0},
+        "Keylin Rivas": {"salario_mensual": 30000.0},
+    }
     HOLIDAYS: list = []
 
-    def _row(self, salida, extras=99.0):
+    def _row(self, salida, entrada="08:00", empleado="Ana García", extras=99.0, descanso=0.0):
         # extras is intentionally large/wrong: Saturday must IGNORE Jibble's column.
         return pd.Series({
-            "Nombre y apellidos": "Ana García",
+            "Nombre y apellidos": empleado,
             "Fecha": "2026-03-14",
             "Día": "Sábado",
-            "Primera entrada": "08:00",
+            "Primera entrada": entrada,
             "Última salida": salida,
             "Horas extras diarias": extras,
             "Horas extras en día de descanso": 0.0,
             "Horas extras en festivo": 0.0,
+            "Horas de descanso (remunerado)": 0.0,
+            "Horas de descanso (no remunerado)": descanso,
         })
 
-    def test_exit_at_5pm_no_overtime(self):
-        b = compute_overtime(self._row("17:00"), self.RATES, self.HOLIDAYS)
+    def test_exit_at_noon_no_overtime(self):
+        # 4h presence (< 5h threshold) → no overtime
+        b = compute_overtime(self._row("12:00"), self.RATES, self.HOLIDAYS)
         assert b.total_hours == pytest.approx(0.0)
 
-    def test_exit_8pm_all_diurna_not_double(self):
-        b = compute_overtime(self._row("20:00"), self.RATES, self.HOLIDAYS)
-        assert b.diurna_hours == pytest.approx(3.0)
+    def test_exit_at_threshold_no_overtime(self):
+        # 08:00–13:00 = 5h presence (= threshold) → no overtime
+        b = compute_overtime(self._row("13:00"), self.RATES, self.HOLIDAYS)
+        assert b.total_hours == pytest.approx(0.0)
+
+    def test_overtime_is_double(self):
+        # 08:00–15:00 = 7h presence → 2h double (not diurna/nocturna)
+        b = compute_overtime(self._row("15:00"), self.RATES, self.HOLIDAYS)
+        assert b.doble_hours == pytest.approx(2.0)
+        assert b.diurna_hours == pytest.approx(0.0)
         assert b.nocturna_hours == pytest.approx(0.0)
-        assert b.doble_hours == pytest.approx(0.0)
-        assert b.diurna_amount == pytest.approx(b.diurna_hours * 30000.0 / (4.33 * 44) * 1.35)
-        assert b.doble_amount == pytest.approx(0.0)
+        assert b.doble_amount == pytest.approx(2.0 * 30000.0 / (4.33 * 44) * 2.0)
 
-    def test_exit_10pm_splits_diurna_and_nocturna(self):
-        b = compute_overtime(self._row("22:00"), self.RATES, self.HOLIDAYS)
-        assert b.diurna_hours == pytest.approx(4.0)
-        assert b.nocturna_hours == pytest.approx(1.0)
-        assert b.doble_hours == pytest.approx(0.0)
-
-    def test_exit_past_midnight_caps_nocturna(self):
-        # 8am→01:00: nocturna caps at midnight → 4 diurna + 3 nocturna, doble 0
+    def test_overtime_past_midnight_all_double(self):
+        # 08:00–01:00 = 17h presence → 12h double (no nocturna split on Saturday)
         b = compute_overtime(self._row("01:00"), self.RATES, self.HOLIDAYS)
-        assert b.diurna_hours == pytest.approx(4.0)
-        assert b.nocturna_hours == pytest.approx(3.0)
-        assert b.doble_hours == pytest.approx(0.0)
+        assert b.doble_hours == pytest.approx(12.0)
+        assert b.diurna_hours == pytest.approx(0.0)
+        assert b.nocturna_hours == pytest.approx(0.0)
 
     def test_ignores_jibble_daily_overtime_column(self):
         # Jibble reports 99h (wrong Saturday schedule); we must use clock time only.
-        b = compute_overtime(self._row("19:00", extras=99.0), self.RATES, self.HOLIDAYS)
-        assert b.total_hours == pytest.approx(2.0)
+        b = compute_overtime(self._row("16:00", extras=99.0), self.RATES, self.HOLIDAYS)
+        assert b.total_hours == pytest.approx(3.0)
+
+    def test_all_day_double_employee_no_threshold(self):
+        # Keylin does not work Saturdays → all 4h presence is double (no 5h subtraction)
+        b = compute_overtime(self._row("12:00", empleado="Keylin Rivas"), self.RATES, self.HOLIDAYS)
+        assert b.doble_hours == pytest.approx(4.0)
+        assert b.diurna_hours == pytest.approx(0.0)
+        assert b.doble_amount == pytest.approx(4.0 * 30000.0 / (4.33 * 44) * 2.0)
+
+    def test_extra_break_reduces_double(self):
+        # 08:00–16:00 = 8h presence with 2h break → 8 − 4 − 2 = 2h double
+        b = compute_overtime(self._row("16:00", descanso=2.0), self.RATES, self.HOLIDAYS)
+        assert b.doble_hours == pytest.approx(2.0)
+
+    def test_all_day_double_employee_subtracts_real_break(self):
+        # Keylin with a 1h break → 4h presence − 1h real break = 3h double (no free hour)
+        b = compute_overtime(
+            self._row("12:00", empleado="Keylin Rivas", descanso=1.0), self.RATES, self.HOLIDAYS
+        )
+        assert b.doble_hours == pytest.approx(3.0)
 
 
 class TestParseTime:
@@ -198,6 +257,32 @@ class TestParseHours:
 
     def test_nat_returns_zero(self):
         assert parse_hours(pd.NaT) == 0.0
+
+
+class TestReportedBreakHours:
+    def test_sums_paid_and_unpaid(self):
+        row = pd.Series({
+            "Horas de descanso (remunerado)": "0h 30m",
+            "Horas de descanso (no remunerado)": "1h 00m",
+        })
+        assert _reported_break_hours(row) == pytest.approx(1.5)
+
+    def test_jibble_format(self):
+        row = pd.Series({
+            "Horas de descanso (remunerado)": "0h 00m",
+            "Horas de descanso (no remunerado)": "0h 45m",
+        })
+        assert _reported_break_hours(row) == pytest.approx(0.75)
+
+    def test_missing_columns_return_zero(self):
+        assert _reported_break_hours(pd.Series({})) == pytest.approx(0.0)
+
+    def test_nan_returns_zero(self):
+        row = pd.Series({
+            "Horas de descanso (remunerado)": float("nan"),
+            "Horas de descanso (no remunerado)": pd.NaT,
+        })
+        assert _reported_break_hours(row) == pytest.approx(0.0)
 
 
 class TestComputeOvertimeIncompleteRecords:
@@ -351,8 +436,8 @@ class TestSameRowMidnightExit:
     HOLIDAYS: list = []
 
     def test_weekday_am_exit_same_row_splits_diurna_nocturna(self):
-        # 8AM entry, 1AM exit on the same row, 8h reported → 4 diurna + 3 nocturna
-        # (nocturna caps at midnight; the hour past 12AM is not counted)
+        # 8AM entry, 1AM exit on the same row → 17h presence, 8h overtime
+        # → 4 diurna (17–21) + 4 nocturna (21–01); nocturna runs past midnight
         df = pd.DataFrame([{
             "Nombre y apellidos": "Ana García",
             "Fecha": "2026-03-10",
@@ -367,7 +452,7 @@ class TestSameRowMidnightExit:
         row = result.iloc[0]
         assert not row["Incompleto"]
         assert row["h_diurna"] == pytest.approx(4.0)
-        assert row["h_nocturna"] == pytest.approx(3.0)
+        assert row["h_nocturna"] == pytest.approx(4.0)
         assert row["h_doble"] == pytest.approx(0.0)
 
 
