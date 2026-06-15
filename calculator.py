@@ -15,11 +15,13 @@ WEEKDAY_WORK_HOURS = 8.0           # ordinary work, excluding break (Mon–Fri)
 SATURDAY_WORK_HOURS = 4.0          # ordinary work, excluding break (Saturday, 8AM–12PM)
 FREE_BREAK_HOURS = 1.0             # daily free rest; assumed taken even if not reported
 
+MONTHLY_HOURS = 4.33 * 44          # 4.33 weeks/month × 44 ordinary hours/week
+
 # These employees do not work Saturdays, so ANY Saturday hour is paid double.
 SATURDAY_ALL_DAY_DOUBLE = {"Ashley Fernandez", "Keylin Rivas", "Libeth Valerio"}
 
 DIURNA_MULTIPLIER = 1.35
-NOCTURNA_MULTIPLIER = 1.54
+NOCTURNA_MULTIPLIER = 1.55
 DOBLE_MULTIPLIER = 2.00
 
 
@@ -247,8 +249,20 @@ def _has_any_reported_extras(row: pd.Series) -> bool:
     )
 
 
-def _hourly_rates(salario_mensual: float) -> tuple[float, float, float]:
-    hora_ordinaria = salario_mensual / (4.33 * 44)
+def _base_hourly_rate(entry: dict) -> float:
+    """Ordinary hourly rate for an employee.
+
+    An explicit ``tarifa_hora`` takes precedence (used by workshop staff paid by
+    the hour). Otherwise the rate is derived from the monthly salary. Returns 0
+    when neither field is set, mirroring the previous behaviour for salaries of 0.
+    """
+    tarifa = entry.get("tarifa_hora")
+    if tarifa:
+        return float(tarifa)
+    return float(entry.get("salario_mensual", 0.0)) / MONTHLY_HOURS
+
+
+def _hourly_rates(hora_ordinaria: float) -> tuple[float, float, float]:
     return (
         hora_ordinaria * DIURNA_MULTIPLIER,
         hora_ordinaria * NOCTURNA_MULTIPLIER,
@@ -267,7 +281,7 @@ def compute_overtime(
     if employee not in rates:
         return breakdown
 
-    r_diurna, r_nocturna, r_doble = _hourly_rates(rates[employee]["salario_mensual"])
+    r_diurna, r_nocturna, r_doble = _hourly_rates(_base_hourly_rate(rates[employee]))
 
     fecha_str = str(row.get("Fecha", ""))[:10]
     is_holiday = fecha_str in holidays

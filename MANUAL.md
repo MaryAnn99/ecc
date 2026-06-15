@@ -69,15 +69,24 @@ El navegador se va a abrir solo con la aplicación. Si no se abre, copia la dire
 
 > Esto solo hay que hacerlo cuando alguien nuevo entra o cambia su sueldo.
 
-En la parte izquierda de la pantalla (el panel lateral), bajo **"Sueldos de empleados"**, hay una **tabla** con dos columnas: *Empleado* y *Salario mensual*.
+En la parte izquierda de la pantalla (el panel lateral), bajo **"Sueldos de empleados"**, hay una **tabla** con tres columnas: *Empleado*, *Salario mensual* y *Tarifa por hora*.
+
+Cada empleado se carga de **una de dos formas**:
+
+- **Salario mensual** — para el personal con sueldo fijo. La calculadora obtiene la hora ordinaria dividiendo el salario (ver fórmula más abajo).
+- **Tarifa por hora** — para el personal de taller que cobra por hora. Aquí pones directamente cuánto vale su hora ordinaria.
+
+> **Si llenas las dos columnas, manda la *Tarifa por hora*.** El salario mensual se ignora en ese caso.
 
 Para editar:
-1. Haz clic en la celda **Salario mensual** del empleado y escribe su sueldo
-2. Para **agregar** a alguien nuevo, escribe su nombre y sueldo en la **fila vacía del final**
+1. Haz clic en la celda del empleado (**Salario mensual** *o* **Tarifa por hora**) y escribe el valor
+2. Para **agregar** a alguien nuevo, escribe su nombre y su salario o tarifa en la **fila vacía del final**
 3. Para **quitar** a alguien, selecciona su fila (casilla a la izquierda) y presiona la papelera / tecla suprimir
-4. Los cambios se aplican automáticamente al calcular
+4. Haz clic en **"💾 Guardar tarifas"** (debajo de la tabla) para que los cambios queden guardados
 
-> **Importante:** el nombre del empleado tiene que ser exactamente igual a como aparece en Jibble, incluyendo tildes y mayúsculas.
+> **Importante:** el nombre del empleado tiene que ser exactamente igual a como aparece en Jibble, incluyendo tildes y mayúsculas. Si no coincide, el empleado no aparece en el cálculo (y no sale ningún error).
+
+> **Botón "Guardar tarifas":** los cambios que hagas en la tabla sirven para el cálculo del momento, pero **se pierden al recargar** si no tocas este botón. Al guardarlo, las altas y cambios quedan escritos en el archivo `rates.json` y siguen ahí la próxima vez que abras la aplicación.
 
 Los siguientes empleados tienen sueldo en **0** y hay que completarlo antes de que aparezcan sus montos:
 - Enrique Lantigua
@@ -181,7 +190,7 @@ Según el Código de Trabajo de la República Dominicana:
 | Tipo | Cuándo aplica | Multiplicador |
 |---|---|---|
 | **Diurna** | Lunes a viernes, horario de día hasta las 21:00 (normalmente desde las 17:00) | × 1.35 sobre la hora ordinaria |
-| **Nocturna** | Lunes a viernes de 21:00 a 07:00 | × 1.54 sobre la hora ordinaria |
+| **Nocturna** | Lunes a viernes de 21:00 a 07:00 | × 1.55 sobre la hora ordinaria |
 | **Doble** | Domingos, feriados y sábados | × 2.00 sobre la hora ordinaria |
 
 > **Lunes a viernes:** la jornada es de 8h de trabajo + 1h de almuerzo libre. La hora
@@ -205,17 +214,27 @@ Según el Código de Trabajo de la República Dominicana:
 > hora que **trabajen** un sábado se paga doble (se descuenta solo su descanso real,
 > sin asumir la hora libre).
 
-La hora ordinaria se calcula así:
-```
-hora_ordinaria = salario_mensual ÷ (4.33 × 44)
-```
+La hora ordinaria depende de cómo cargaste al empleado:
+
+- Si tiene **tarifa por hora**, esa **es** la hora ordinaria (se usa tal cual).
+- Si tiene **salario mensual**, se calcula así:
+  ```
+  hora_ordinaria = salario_mensual ÷ (4.33 × 44)
+  ```
+  (4.33 semanas por mes × 44 horas por semana = 190.52 horas al mes.)
 
 ---
 
 ## Preguntas frecuentes
 
 **¿Qué pasa si un empleado aparece con $0.00 aunque tiene horas extras?**
-Su `salario_mensual` en el panel lateral está en 0. Complétalo y vuelve a calcular.
+No tiene cargado ni salario mensual ni tarifa por hora (ambos en 0) en el panel lateral. Completa uno de los dos, toca **"Guardar tarifas"** y vuelve a calcular.
+
+**¿Cuándo uso "Tarifa por hora" en vez de "Salario mensual"?**
+Usa **tarifa por hora** para el personal de taller que cobra por hora; pones directamente el valor de su hora. Usa **salario mensual** para el personal con sueldo fijo. Si llenas ambas, manda la tarifa por hora.
+
+**Agregué a alguien y al recargar desapareció. ¿Por qué?**
+No tocaste **"💾 Guardar tarifas"**. Los cambios en la tabla solo quedan guardados al presionar ese botón.
 
 **¿Por qué algunos empleados tienen valores muy grandes (15h, 23h)?**
 Probablemente olvidaron registrar la salida en Jibble ese día. Esos registros hay que verificarlos manualmente antes de pagar.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from io import BytesIO
 from pathlib import Path
 
@@ -58,6 +59,18 @@ def _to_spanish(df: pd.DataFrame, mapping: dict[str, str]) -> pd.DataFrame:
     return out.rename(columns=mapping)
 
 
+def _autofit_columns(ws, df: pd.DataFrame) -> None:
+    """Widen each column to fit its header and values, so the .xlsx opens readable."""
+    from openpyxl.utils import get_column_letter
+
+    for idx, col in enumerate(df.columns, start=1):
+        header_len = len(str(col))
+        values = df[col].astype(str)
+        body_len = int(values.map(len).max()) if not values.empty else 0
+        width = min(max(header_len, body_len) + 2, 40)
+        ws.column_dimensions[get_column_letter(idx)].width = width
+
+
 def build_approvals_template(employees: list[str]) -> bytes:
     """Excel template (hoja 'Aprobados') with the configured employees, blank dates."""
     df = pd.DataFrame({"Empleado": sorted(employees), "Fecha": [""] * len(employees)})
@@ -74,9 +87,12 @@ def build_approvals_template(employees: list[str]) -> bytes:
 # ── Barra lateral: sueldos de los empleados ───────────────────────────────────
 st.sidebar.header("Sueldos de empleados")
 st.sidebar.caption(
-    "Edita el salario mensual de cada empleado. Para agregar a alguien nuevo usa la "
-    "fila vacía del final; para quitar a alguien, selecciona la fila y bórrala. El "
-    "nombre debe coincidir exactamente con el de Jibble."
+    "Cada empleado puede cargar **salario mensual** o **tarifa por hora**. Si pones "
+    "tarifa por hora, esa manda (útil para personal de taller); si no, la hora se "
+    "calcula a partir del salario. Para agregar a alguien nuevo usa la fila vacía del "
+    "final; para quitarlo, selecciona la fila y bórrala. El nombre debe coincidir "
+    "exactamente con el de Jibble. Toca **Guardar tarifas** para que los cambios "
+    "queden guardados."
 )
 
 rates_path = Path("rates.json")
@@ -84,10 +100,14 @@ default_rates = load_rates(rates_path) if rates_path.exists() else {}
 
 rates_df = pd.DataFrame(
     [
-        {"Empleado": name, "Salario mensual": data.get("salario_mensual", 0)}
+        {
+            "Empleado": name,
+            "Salario mensual": data.get("salario_mensual", 0),
+            "Tarifa por hora": data.get("tarifa_hora", 0),
+        }
         for name, data in default_rates.items()
     ],
-    columns=["Empleado", "Salario mensual"],
+    columns=["Empleado", "Salario mensual", "Tarifa por hora"],
 )
 
 edited_rates = st.sidebar.data_editor(
@@ -100,6 +120,9 @@ edited_rates = st.sidebar.data_editor(
         "Salario mensual": st.column_config.NumberColumn(
             "Salario mensual", min_value=0, step=100, format="%.2f"
         ),
+        "Tarifa por hora": st.column_config.NumberColumn(
+            "Tarifa por hora", min_value=0, step=10, format="%.2f"
+        ),
     },
     key="rates_editor",
 )
@@ -109,8 +132,24 @@ for _, row in edited_rates.iterrows():
     name = str(row["Empleado"]).strip()
     if not name or name.lower() == "nan":
         continue
+    entry: dict[str, float] = {}
     salary = row["Salario mensual"]
-    rates[name] = {"salario_mensual": 0.0 if pd.isna(salary) else float(salary)}
+    tarifa = row["Tarifa por hora"]
+    if not pd.isna(salary) and float(salary) > 0:
+        entry["salario_mensual"] = float(salary)
+    if not pd.isna(tarifa) and float(tarifa) > 0:
+        entry["tarifa_hora"] = float(tarifa)
+    rates[name] = entry
+
+if st.sidebar.button("💾 Guardar tarifas"):
+    note = ""
+    if rates_path.exists():
+        with open(rates_path, "r", encoding="utf-8") as f:
+            note = json.load(f).get("_note", "")
+    payload = {"_note": note, **rates} if note else dict(rates)
+    with open(rates_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    st.sidebar.success("Tarifas guardadas en rates.json")
 
 # ── Barra lateral: feriados ───────────────────────────────────────────────────
 st.sidebar.header("Feriados")
@@ -227,12 +266,12 @@ if st.button("Calcular horas extra", type="primary"):
 
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        _to_spanish(audit, AUDIT_COLUMNS).to_excel(
-            writer, sheet_name="Auditoría", index=False
-        )
-        _to_spanish(summary, RESULT_COLUMNS).to_excel(
-            writer, sheet_name="Resultado", index=False
-        )
+        audit_es = _to_spanish(audit, AUDIT_COLUMNS)
+        summary_es = _to_spanish(summary, RESULT_COLUMNS)
+        audit_es.to_excel(writer, sheet_name="Auditoría", index=False)
+        summary_es.to_excel(writer, sheet_name="Resultado", index=False)
+        _autofit_columns(writer.sheets["Auditoría"], audit_es)
+        _autofit_columns(writer.sheets["Resultado"], summary_es)
     buf.seek(0)
 
     st.download_button(

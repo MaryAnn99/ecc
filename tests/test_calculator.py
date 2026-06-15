@@ -4,7 +4,9 @@ import pandas as pd
 import pytest
 
 from calculator import (
+    MONTHLY_HOURS,
     OvertimeBreakdown,
+    _base_hourly_rate,
     _reported_break_hours,
     _split_diurna_nocturna,
     classify_weekday_hours,
@@ -625,3 +627,26 @@ class TestProcessTimesheetAuditColumns:
         assert employees[0] == "Ana García"
         assert employees[-1] == "Carlos López"
         assert fechas_ana == sorted(fechas_ana)
+
+
+class TestBaseHourlyRate:
+    """Resolve the ordinary hourly rate: tarifa_hora wins, else derive from salary."""
+
+    def test_tarifa_hora_takes_precedence(self):
+        # Both present: the explicit hourly rate is used, salary is ignored.
+        entry = {"salario_mensual": 30000.0, "tarifa_hora": 200.0}
+        assert _base_hourly_rate(entry) == pytest.approx(200.0)
+
+    def test_tarifa_hora_only(self):
+        assert _base_hourly_rate({"tarifa_hora": 95.0}) == pytest.approx(95.0)
+
+    def test_salary_only_is_derived(self):
+        entry = {"salario_mensual": 30000.0}
+        assert _base_hourly_rate(entry) == pytest.approx(30000.0 / MONTHLY_HOURS)
+
+    def test_neither_field_is_zero(self):
+        assert _base_hourly_rate({}) == pytest.approx(0.0)
+
+    def test_zero_tarifa_falls_back_to_salary(self):
+        entry = {"salario_mensual": 30000.0, "tarifa_hora": 0}
+        assert _base_hourly_rate(entry) == pytest.approx(30000.0 / MONTHLY_HOURS)
